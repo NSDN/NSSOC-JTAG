@@ -25,7 +25,7 @@ __xdata __at (0x0040) uint8_t  Ep4Buffer[MAX_PACKET_SIZE];	  //端点4 OUT接收
 
 __xdata __at (0x0100) uint8_t  RingBuf[128];
 
-uint16_t SetupLen;
+uint16_t  SetupLen;
 uint8_t   SetupReq, Count, UsbConfig;
 uint8_t   VendorControl;
 
@@ -36,6 +36,7 @@ USB_SETUP_REQ   SetupReqBuf;												   //暂存Setup包
 
 #define SBAUD_TH		104U	// 16M/16/9600
 #define SBAUD_SET		9600	// 串口0的波特率
+#define LED             PWM2
 
 /*设备描述符*/
 __code uint8_t DevDesc[] = {0x12, 0x01, 0x00, 0x02,
@@ -127,7 +128,6 @@ volatile __idata uint8_t UpPoint3_Ptr = 2;
 volatile __idata uint16_t SOF_Count = 0;
 volatile __idata uint8_t Latency_Timer = 4; //Latency Timer
 volatile __idata uint8_t Latency_Timer1 = 4;
-volatile __idata uint8_t Require_DFU = 0;
 
 /* 流控 */
 volatile __idata uint8_t soft_dtr = 0;
@@ -165,31 +165,6 @@ void USBDeviceCfg()
     UDEV_CTRL &= ~bUD_LOW_SPEED;											 //选择全速12M模式，默认方式
     UDEV_CTRL = bUD_PD_DIS;  // 禁止DP/DM下拉电阻
     UDEV_CTRL |= bUD_PORT_EN;												  //使能物理端口
-}
-
-void Jump_to_BL()
-{
-    ES = 0;
-    PS = 0;
-
-    P1_DIR_PU = 0;
-    P1_MOD_OC = 0;
-    P1 = 0xff;
-
-    USB_INT_EN = 0;
-    USB_CTRL = 0x06;
-    //UDEV_CTRL = 0x80;
-
-    delay(100);
-
-    EA = 0;
-
-    while(1)
-    {
-        __asm
-        LJMP 0x3800
-        __endasm;
-    }
 }
 /*******************************************************************************
 * Function Name  : USBDeviceIntCfg()
@@ -308,8 +283,8 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
                 INTF1_RTS = 1;
             }
         }
-        if(SOF_Count % 16 == 0)
-            PWM2 = 1;
+        // if(SOF_Count % 16 == 0)
+        //     LED = 0;
     }
     if(UIF_TRANSFER)															//USB传输完成标志
     {
@@ -398,7 +373,6 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
                             len = 0;
                             break;
                         case 0x91: //WRITE EEPROM, FT_PROG动作,直接跳转BL
-                            Require_DFU = 1;
                             len = 0;
                             break;
                         case 0x00:
@@ -473,7 +447,6 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
                             len = 0;
                             break;
                         case 0x01: //MODEM Control
-#if HARD_ESP_CTRL
                             if(UsbSetupBuf->wIndexL == 2)
                             {
                                 if(UsbSetupBuf->wValueH & 0x01)
@@ -504,13 +477,6 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
                                 }
                                 Modem_Count = 20;
                             }
-#else
-                            if(Esp_Require_Reset == 3)
-                            {
-                                CAP1 = 0;
-                                Esp_Require_Reset = 4;
-                            }
-#endif
                             len = 0;
                             break;
                         default:
@@ -668,23 +634,6 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
                                 if( CfgDesc[ 7 ] & 0x20 )
                                 {
                                     /* 休眠 */
-#ifdef DE_PRINTF
-                                    printf( "suspend\n" );															 //睡眠状态
-
-                                    while ( XBUS_AUX & bUART0_TX )
-                                    {
-                                        ;	//等待发送完成
-                                    }
-#endif
-#if 0
-                                    SAFE_MOD = 0x55;
-                                    SAFE_MOD = 0xAA;
-                                    WAKE_CTRL = bWAK_BY_USB | bWAK_RXD0_LO | bWAK_RXD1_LO;					  //USB或者RXD0/1有信号时可被唤醒
-                                    PCON |= PD;																 //睡眠
-                                    SAFE_MOD = 0x55;
-                                    SAFE_MOD = 0xAA;
-                                    WAKE_CTRL = 0x00;
-#endif
                                 }
                                 else
                                 {
@@ -822,9 +771,6 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
     }
     if(UIF_BUS_RST)																 //设备模式USB总线复位中断
     {
-#ifdef DE_PRINTF
-        printf( "reset\n" );															 //睡眠状态
-#endif
         UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
         UEP1_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK;
         UEP2_CTRL = bUEP_AUTO_TOG | UEP_T_RES_NAK | UEP_R_RES_ACK;
@@ -859,22 +805,7 @@ void DeviceInterrupt(void) __interrupt (INT_NO_USB)					   //USB中断服务程�
         UIF_SUSPEND = 0;
         if ( USB_MIS_ST & bUMS_SUSPEND )											 //挂起
         {
-#ifdef USB_SLEEP
-    #ifdef DE_PRINTF
-            printf( "suspend\n" );															 //睡眠状态
-    #endif
-            while ( XBUS_AUX & bUART0_TX )
-            {
-                ;	//等待发送完成
-            }
-            SAFE_MOD = 0x55;
-            SAFE_MOD = 0xAA;
-            WAKE_CTRL = bWAK_BY_USB | bWAK_RXD0_LO | bWAK_RXD1_LO;					  //USB或者RXD0/1有信号时可被唤醒
-            PCON |= PD;																 //睡眠
-            SAFE_MOD = 0x55;
-            SAFE_MOD = 0xAA;
-            WAKE_CTRL = 0x00;
-#endif
+
         }
     }
     else																			   //意外的中断,不可能发生的情况
@@ -920,91 +851,10 @@ void SerialPort_Config()
     PS = 1; //中断优先级最高
 }
 
-void Xtal_Enable(void) //使能外部时钟
-{
-    USB_INT_EN = 0;
-    USB_CTRL = 0x06;
-
-    SAFE_MOD = 0x55;
-    SAFE_MOD = 0xAA;
-    CLOCK_CFG |= bOSC_EN_XT;                          //使能外部24M晶振
-    SAFE_MOD = 0x00;
-    delay(50);
-
-//	SAFE_MOD = 0x55;
-//	SAFE_MOD = 0xAA;
-//	CLOCK_CFG &= ~bOSC_EN_INT;                        //关闭内部RC
-//	SAFE_MOD = 0x00;
-    delay(250);
-}
-
-/*******************************************************************************
-* Function Name  : Uart0_ISR()
-* Description	: 串口接收中断函数，实现循环缓冲接收
-*******************************************************************************/
-
 //Ring Buf
 
 volatile __idata uint8_t WritePtr = 0;
 volatile __idata uint8_t ReadPtr = 0;
-
-#ifndef HARD_ESP_CTRL
-__code uint8_t ESP_Boot_Sequence[] =
-{
-    0x07, 0x07, 0x12, 0x20,
-    0x55, 0x55, 0x55, 0x55,
-    0x55, 0x55, 0x55, 0x55,
-    0x55, 0x55, 0x55, 0x55,
-    0x55, 0x55, 0x55, 0x55
-};
-#endif
-
-#define FAST_RECEIVE
-
-#ifndef FAST_RECEIVE /* 年久失修的代码,不要维护了 */
-void Uart0_ISR(void) __interrupt (INT_NO_UART0) __using 1
-{
-    if(RI)   //收到数据
-    {
-        if((WritePtr + 1) % sizeof(RingBuf) != ReadPtr)
-        {
-            //环形缓冲写
-            RingBuf[WritePtr++] = SBUF;
-            WritePtr %= sizeof(RingBuf);
-        }
-        RI = 0;
-    }
-    if (TI)
-    {
-        if(USBOutPtr_1 >= USBOutLength_1)
-        {
-            UEP2_CTRL = UEP2_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
-            TI = 0;
-        }
-        else
-        {
-            uint8_t ch = Ep2Buffer[USBOutPtr_1];
-            SBUF = ch;
-            TI = 0;
-#ifndef HARD_ESP_CTRL
-            if(ESP_Boot_Sequence[Esp_Boot_Chk] == ch)
-                Esp_Boot_Chk ++;
-            else
-                Esp_Boot_Chk = 0;
-
-            if(Esp_Boot_Chk >= (sizeof(ESP_Boot_Sequence) - 1))
-            {
-                if(Esp_Require_Reset == 0)
-                    Esp_Require_Reset = 1;
-                Esp_Boot_Chk = 0;
-            }
-#endif
-            USBOutPtr_1++;
-        }
-    }
-
-}
-#else
 
 //汇编接收数据，选择寄存器组1，DPTR1 1.5M~150kHz~160 cycles
 void Uart0_ISR(void) __interrupt (INT_NO_UART0) __using 1 __naked
@@ -1068,24 +918,16 @@ ISR_End:
     reti
     __endasm;
 }
-#endif
 
-//#define FAST_COPY_2
-//#define FAST_COPY_1
+void write(uint8_t value) {
+    RingBuf[WritePtr++] = value;
+    WritePtr %= sizeof(RingBuf);
+}
 
-void CLKO_Enable(void) //打开T2输出
-{
-    ET2 = 0;
-    T2CON = 0;
-    T2MOD = 0;
-    T2MOD |= bTMR_CLK | bT2_CLK | T2OE;
-    RCAP2H = 0xff;
-    RCAP2L = 0xfe;
-    TH2 = 0xff;
-    TL2 = 0xfe;
-    TR2 = 1;
-    P1_MOD_OC &= ~(0x01); //P1.0推挽输出
-    P1_DIR_PU |= 0x01;
+void print(char* str) {
+    while (*str) {
+        write(*str++);
+    }
 }
 
 #define TMS T2EX
@@ -1108,6 +950,19 @@ void JTAG_IO_Config(void)
     /* P1.1 TMS, P1.5 TDI(MOSI), P1.7 TCK PP */
     /* P1.6 TDO(MISO) INPUT */
     /* P1.4 INPUT */
+}
+
+void Timer2_Init(void)
+{
+    ET2 = 0;
+    T2CON = 0;
+    T2MOD = 0;
+    T2MOD |= bTMR_CLK | bT2_CLK | T2OE;
+    RCAP2H = 0xff;
+    RCAP2L = 0xfe;
+    TH2 = 0xff;
+    TL2 = 0xfe;
+    TR2 = 1;
 }
 
 void Run_Test_Start()
@@ -1150,209 +1005,19 @@ void Run_Test_Stop()
 #define MPSSE_TRANSMIT_BYTE_MSB	11
 #define MPSSE_RUN_TEST	12
 
-#define MPSSE_DEBUG	0
-#define MPSSE_HWSPI	1
-
 #define GOWIN_INT_FLASH_QUIRK 1
 
 void SPI_Init()
 {
-    SPI0_CK_SE = 0x06;
-
+    SPI0_CK_SE = 0x08;  // 2MHz
 }
 
-#if MPSSE_HWSPI
 #define SPI_LSBFIRST() SPI0_SETUP |= bS0_BIT_ORDER
 #define SPI_MSBFIRST() SPI0_SETUP &= ~bS0_BIT_ORDER
 #define SPI_ON() SPI0_CTRL = bS0_MISO_OE | bS0_MOSI_OE | bS0_SCK_OE;
 #define SPI_OFF() SPI0_CTRL = 0;
-#else
-#define SPI_LSBFIRST()
-#define SPI_MSBFIRST()
-#define SPI_ON()
-#define SPI_OFF()
-#endif
+
 //主函数
-void Shift_IR(uint8_t ir, uint8_t len)
-{ /* 开始状态必须是RTI */
-    int i;
-    /* SLD */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 1;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    /* SLI */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 1;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    /* CIR */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 0;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    /* SIR */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 0;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    for(i = 0; i < len; i++)
-    {
-        TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        TDI = ir & 0x01;
-        ir >>= 1;
-        if(i == (len - 1))
-            TMS = 1;
-        else
-            TMS = 0;
-        TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    }
-    /* E1I */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 1;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    /* UIR */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 0;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-}
-
-void Run_Test(uint32_t t)
-{
-    while(t--)
-    {
-        TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    }
-}
-
-void Unbrick_FPGA()
-{
-    uint32_t i;
-    SPI_OFF();
-    RXD = 0;
-    delay(5);
-    RXD = 1;
-    for(i = 0; i < 5; i++)
-    { /* 发送5个1选择TLR */
-        TCK = 0;
-        TMS = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    }
-
-    /* 选择RTI */
-    TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    TMS = 0;
-    TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    //Shift_IR(0x11, 8);
-    //Run_Test(8);
-    //Shift_IR(0x41, 8);
-    //Run_Test(8);
-    //delay(5);
-    Shift_IR(0x15, 8);
-    Run_Test(8);
-    Shift_IR(0x05, 8);
-    Run_Test(8);
-    Shift_IR(0x02, 8);
-    Run_Test(8);
-    delay(1);
-    /* RUN TEST */
-#if 0
-    for(i = 0; i < 3200000UL; i++)
-    {
-        TCK = 0;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        TMS = 0;
-        TCK = 1;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-        __asm nop __endasm;
-    }
-#endif
-    Shift_IR(0x3A, 8);
-    Shift_IR(0x02, 8);
-}
-
 void main()
 {
     uint8_t i;
@@ -1363,41 +1028,24 @@ void main()
     volatile uint16_t Uart_Timeout1 = 0;
     uint16_t Esp_Stage = 0;
 
+    //P3_MOD_OC &= ~bTXD;
+    //TXD = 1;    // exFlash Mode
+    TXD = 0;      // embFlash Mode
+
     sysClockConfig();
-    CLKO_Enable();
-    delay(5);
-
-    PWM2 = 0;
     delay(500);
-    PWM2 = 1;
 
-    if (PWM2 == 0) {
-        while (PWM2 == 0);
-        delay(500);
+    LED = 0;
+    delay(500);
+    LED = 1;
 
-        PWM2 = 0;
-        delay(500);
-        PWM2 = 1;
-
-        JTAG_IO_Config();
-        Unbrick_FPGA();
-        delay(500);
-
-        PWM2 = 0;
-        delay(500);
-        PWM2 = 1;
-    }
+    //P3_MOD_OC |= bTXD;
 
     JTAG_IO_Config();
     SerialPort_Config();
-
-#if MPSSE_HWSPI
+    Timer2_Init();
     SPI_Init();
-#endif
 
-#ifdef DE_PRINTF
-    printf("start ...\n");
-#endif
     USBDeviceCfg();
     USBDeviceEndPointCfg();											   //端点配置
     USBDeviceIntCfg();													//中断初始化
@@ -1420,20 +1068,13 @@ void main()
         {
             if(USBReceived == 1)
             { //收到一包
-            #if MPSSE_DEBUG
-                if(UpPoint1_Ptr < 64 && UpPoint1_Busy == 0 && UpPoint3_Busy == 0 && UpPoint3_Ptr < 64) /* 可以发送 */
-            #else
                 if(UpPoint1_Ptr < 64 && UpPoint1_Busy == 0)
-            #endif
                 {
-                    PWM2 = !PWM2;
+                    LED = !LED;
                         switch(Mpsse_Status)
                         {
                             case MPSSE_IDLE:
                                 instr = Ep2Buffer[USBOutPtr];
-            #if MPSSE_DEBUG
-                                Ep3Buffer[UpPoint3_Ptr++] = instr;
-            #endif
                                 switch(instr)
                                 {
                                     case 0x80:
@@ -1490,8 +1131,8 @@ void main()
                                 Mpsse_LongLen |= (Ep2Buffer[USBOutPtr] << 8) & 0xff00;
                                 USBOutPtr++;
                         #if GOWIN_INT_FLASH_QUIRK
-                                if((Mpsse_LongLen == 25000 || Mpsse_LongLen == 750 || Mpsse_LongLen == 2968 ||
-                                    Mpsse_LongLen == 38 || Mpsse_LongLen == 30 || Mpsse_LongLen == 600 || Mpsse_LongLen == 2375 || Mpsse_LongLen == 20000) && (instr & (1 << 5)) == 0)
+                                //if((Mpsse_LongLen == 5 || Mpsse_LongLen == 30 || Mpsse_LongLen == 8000 || Mpsse_LongLen == 37500) && (instr & (1 << 5)) == 0)
+                                if (instr == 0x19)
                                 {
                                     SPI_OFF();
                                     Run_Test_Start();
@@ -1513,28 +1154,9 @@ void main()
                             break;
                             case MPSSE_TRANSMIT_BYTE:
                                 data = Ep2Buffer[USBOutPtr];
-                            #if MPSSE_HWSPI
                                 SPI0_DATA = data;
                                 while(S0_FREE == 0);
                                 rcvdata = SPI0_DATA;
-                            #else
-                                rcvdata = 0;
-                                for(i = 0; i < 8; i++)
-                                {
-                                    SCK = 0;
-                                    MOSI = (data & 0x01);
-                                    data >>= 1;
-                                    rcvdata >>= 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
-                                    SCK = 1;
-                                    if(MISO == 1)
-                                        rcvdata |= 0x80;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
-                                }
-                                SCK = 0;
-                            #endif
                                 if(instr == 0x39)
                                     Ep1Buffer[UpPoint1_Ptr++] = rcvdata;
                                 USBOutPtr++;
@@ -1544,28 +1166,9 @@ void main()
                             break;
                             case MPSSE_TRANSMIT_BYTE_MSB:
                                 data = Ep2Buffer[USBOutPtr];
-                            #if MPSSE_HWSPI
                                 SPI0_DATA = data;
                                 while(S0_FREE == 0);
                                 rcvdata = SPI0_DATA;
-                            #else
-                                rcvdata = 0;
-                                for(i = 0; i < 8; i++)
-                                {
-                                    SCK = 0;
-                                    MOSI = (data & 0x80);
-                                    data <<= 1;
-                                    rcvdata <<= 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
-                                    SCK = 1;
-                                    if(MISO == 1)
-                                        rcvdata |= 0x01;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
-                                }
-                                SCK = 0;
-                            #endif
                                 if(instr == 0x31)
                                     Ep1Buffer[UpPoint1_Ptr++] = rcvdata;
                                 USBOutPtr++;
@@ -1592,13 +1195,15 @@ void main()
                                     MOSI = (data & 0x01);
                                     data >>= 1;
                                     rcvdata >>= 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
                                     SCK = 1;
                                     if(MISO)
                                         rcvdata |= 0x80;//(1 << (Mpsse_ShortLen));
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
                                 } while((Mpsse_ShortLen--) > 0);
                                 SCK = 0;
                                 if(instr == 0x3b)
@@ -1614,11 +1219,13 @@ void main()
                                     SCK = 0;
                                     MOSI = (data & 0x80);
                                     data <<= 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
                                     SCK = 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
                                 } while((Mpsse_ShortLen--) > 0);
                                 SCK = 0;
 
@@ -1644,13 +1251,15 @@ void main()
                                     TMS = (data & 0x01);
                                     data >>= 1;
                                     rcvdata >>= 1;
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
-                                    SCK = 1;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    TCK = 1;
                                     if(TDO)
                                         rcvdata |= 0x80;//(1 << (Mpsse_ShortLen));
-                                    __asm nop __endasm;
-                                    __asm nop __endasm;
+                                    __asm__("nop");
+                                    __asm__("nop");
+                                    __asm__("nop");
                                 } while((Mpsse_ShortLen--) > 0);
                                 TCK = 0;
                                 if(instr == 0x6b)
@@ -1769,12 +1378,6 @@ void main()
                 Serial_Done = 0;
                 //if(UEP4_CTRL & MASK_UEP_R_RES != UEP_R_RES_ACK)
                 UEP4_CTRL = UEP4_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
-            }
-
-            if(Require_DFU)
-            {
-                Require_DFU = 0;
-                Jump_to_BL();
             }
         }
     }
